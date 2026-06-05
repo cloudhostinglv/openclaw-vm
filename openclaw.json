@@ -1,0 +1,89 @@
+{
+  "$comment": "OpenClaw config for a single-tenant per-client VM, backed by avots.ai. Strict JSON (no comments/trailing commas) so it parses everywhere. See README.md for the why behind every block. Pre-seeded at provision time into ~/.openclaw/openclaw.json. Secrets are NOT here: AVOTS_API_KEY and OPENCLAW_GATEWAY_TOKEN come from ~/.openclaw/.env via ${VAR} refs.",
+
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "port": 18789,
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    }
+  },
+
+  "models": {
+    "$comment": "mode:merge keeps OpenClaw's bundled provider catalogs and ADDS the avots provider. STEP 1 of 2: register the provider + its model so the model exists at runtime.",
+    "mode": "merge",
+    "providers": {
+      "avots": {
+        "baseUrl": "https://api.avots.ai/openai/v1",
+        "apiKey": "${AVOTS_API_KEY}",
+        "api": "openai-completions",
+        "timeoutSeconds": 300,
+        "models": [
+          {
+            "id": "anthropic/claude-opus-4.8",
+            "name": "avots Claude Opus 4.8",
+            "input": ["text", "image"],
+            "contextWindow": 200000,
+            "maxTokens": 32000,
+            "reasoning": true,
+            "compat": {
+              "$comment": "TOOL CALLING: OpenClaw sends the tools parameter unless a model sets compat.supportsTools:false (capability is opt-OUT, permissive by default - see src/agents/model-tool-support.ts). We set it TRUE explicitly so the intent is recorded and so nobody flips it off by accident. supportsDeveloperRole is FORCED to false by OpenClaw at runtime for non-native openai-completions baseUrls anyway; we set it to match and avoid 400s.",
+              "supportsTools": true,
+              "supportsDeveloperRole": false
+            }
+          }
+        ]
+      }
+    }
+  },
+
+  "tools": {
+    "$comment": "Tool policy is defense-in-depth on TOP of the sandbox. profile 'coding' gives fs/runtime/web/etc; we DENY the highest-blast-radius tools globally, and lock untrusted/unknown senders down to read-only via toolsBySender['*'].",
+    "profile": "coding",
+    "deny": ["browser", "canvas"],
+    "toolsBySender": {
+      "*": ["exec", "process", "code_execution", "write", "edit", "apply_patch"]
+    },
+    "elevated": {
+      "$comment": "Elevated exec BYPASSES the sandbox. Keep it OFF. If a trusted owner truly needs it, enable per channel+identity here, never globally.",
+      "enabled": false
+    },
+    "loopDetection": {
+      "enabled": true,
+      "historySize": 30,
+      "warningThreshold": 10,
+      "criticalThreshold": 20,
+      "globalCircuitBreakerThreshold": 30
+    }
+  },
+
+  "agents": {
+    "defaults": {
+      "$comment": "STEP 2 of 2: the model registered above must ALSO be allowlisted here using the fully-qualified <provider-id>/<model-id> key. agents.defaults.models is an allowlist when set; agents.defaults.model.primary selects the active model. Both use 'avots/anthropic/claude-opus-4.8'.",
+      "model": {
+        "primary": "avots/anthropic/claude-opus-4.8"
+      },
+      "models": {
+        "avots/anthropic/claude-opus-4.8": {
+          "alias": "Claude Opus 4.8 (avots)"
+        }
+      },
+      "sandbox": {
+        "$comment": "SECURITY-CRITICAL. mode:all sandboxes EVERY session (incl. the main one). Default backend = in-gateway isolation (no docker.sock needed). workspaceAccess:none = the sandbox cannot read/write the host workspace. To use the Docker backend instead, see README - it requires the docker CLI in the image and a NON-host docker context; do NOT mount the host socket.",
+        "mode": "all",
+        "workspaceAccess": "none"
+      }
+    }
+  },
+
+  "channels": {
+    "$comment": "Messaging is OUTBOUND-ONLY (long-polling); no inbound webhook/TLS. Enable exactly ONE channel per client and lock it to the owner's identity. Tokens come from .env. Example below is Telegram; replace with the client's chosen channel during onboarding. allowFrom MUST be set so the agent only answers the owner.",
+    "telegram": {
+      "enabled": true,
+      "botToken": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": ["${TELEGRAM_OWNER_ID}"]
+    }
+  }
+}

@@ -1,0 +1,66 @@
+# cloud-init drop-in for provisioning OpenClaw on a per-client single-tenant VM.
+#
+# This is a SNIPPET to merge into the VM's cloud-init user-data. It assumes the golden
+# image already has: Docker + compose plugin installed, the OpenClaw image PULLED, and
+# this repo's openclaw/ dir present at /srv/avots-vm/openclaw (docker-compose.yml +
+# openclaw.json template).
+#
+# {placeholder} tokens are substituted by the provisioning pipeline at provision time
+# (same templating as the rest of the autoinstall): {avots_key}, {gateway_token},
+# {telegram_bot_token}, {telegram_owner_id}.
+#
+# Generate per-VM secrets in the pipeline BEFORE substitution, e.g.:
+#   {gateway_token} = openssl rand -hex 32
+#
+# Config-dir model: the gateway runs as a 'node' user (uid 1000 in the image) with HOME
+# /home/node, and ~/.openclaw is bind-mounted from the host. We materialize the host
+# config dir at /srv/avots-vm/openclaw/state and point the compose vars at it, so root
+# can write the seed files and the container can read them. (uid 1000 must own it.)
+
+write_files:
+  # Per-client .env. Gitignored counterpart of .env.example; never baked into the image.
+  # Secrets ONLY — openclaw.json references these as ${VAR}.
+  - path: /srv/avots-vm/openclaw/state/.env
+    owner: root:root
+    permissions: "0600"
+    content: |
+      AVOTS_API_KEY={avots_key}
+      OPENCLAW_GATEWAY_TOKEN={gateway_token}
+      TELEGRAM_BOT_TOKEN={telegram_bot_token}
+      TELEGRAM_OWNER_ID={telegram_owner_id}
+      OPENCLAW_DISABLE_BONJOUR=1
+
+  # Compose env: tell docker-compose.yml where the host config/state dir is, so the
+  # bind mounts land on the dir we seed below (not the default /home/node path).
+  - path: /srv/avots-vm/openclaw/.compose.env
+    owner: root:root
+    permissions: "0644"
+    content: |
+      OPENCLAW_CONFIG_DIR=/srv/avots-vm/openclaw/state
+      OPENCLAW_WORKSPACE_DIR=/srv/avots-vm/openclaw/state/workspace
+      OPENCLAW_AUTH_PROFILE_SECRET_DIR=/srv/avots-vm/openclaw/state/auth-profile-secrets
+      OPENCLAW_GATEWAY_PORT=18789
+
+runcmd:
+  # 1) Lay down the seeded config dir owned by the in-container user (uid/gid 1000 = node).
+  - [ bash, -lc, "mkdir -p /srv/avots-vm/openclaw/state/workspace /srv/avots-vm/openclaw/state/auth-profile-secrets" ]
+  # The .env was written to state/ above; copy the openclaw.json template in place.
+  - [ bash, -lc, "cp /srv/avots-vm/openclaw/openclaw.json /srv/avots-vm/openclaw/state/openclaw.json" ]
+  - [ bash, -lc, "chown -R 1000:1000 /srv/avots-vm/openclaw/state && chmod 600 /srv/avots-vm/openclaw/state/.env" ]
+  # Merge the per-VM compose env into the dir docker compose reads (.env next to the file).
+  - [ bash, -lc, "cat /srv/avots-vm/openclaw/.compose.env > /srv/avots-vm/openclaw/.env.compose && ln -sf /srv/avots-vm/openclaw/.env.compose /srv/avots-vm/openclaw/.env || true" ]
+
+  # 2) Bring up the gateway (loopback-only). --env-file points compose at the host paths;
+  #    the gateway's own secrets/.env are read from inside the mounted state dir.
+  - [ bash, -lc, "cd /srv/avots-vm/openclaw && docker compose --env-file .compose.env up -d openclaw-gateway 2>&1 | tee /var/log/openclaw-up.log" ]
+
+  # 3) Non-interactive onboard in REF mode via the CLI sidecar. The avots provider,
+  #    allowlist and sandbox are already in the seeded openclaw.json, so onboarding only
+  #    finalizes local gateway mode + token (as an env-backed SecretRef, never plaintext)
+  #    and waits for health. --auth-choice skip = do not (re)write provider auth; the
+  #    avots key stays an env ref. The token env var is read from the container .env.
+  - [ bash, -lc, "cd /srv/avots-vm/openclaw && docker compose --env-file .compose.env run --rm --no-deps --entrypoint node openclaw dist/index.js onboard --non-interactive --mode local --auth-choice skip --secret-input-mode ref --gateway-auth token --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN --skip-bootstrap --accept-risk 2>&1 | tee /var/log/openclaw-onboard.log" ]
+
+  # 4) Sanity: doctor should report no critical config issues (avots provider resolvable,
+  #    sandbox configured, model allowlisted). Non-fatal; logged for the operator.
+  - [ bash, -lc, "cd /srv/avots-vm/openclaw && docker compose --env-file .compose.env run --rm --no-deps --entrypoint node openclaw dist/index.js doctor 2>&1 | tee /var/log/openclaw-doctor.log || true" ]
