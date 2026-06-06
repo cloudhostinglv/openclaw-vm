@@ -92,8 +92,8 @@ services:
         limits:
           cpus: "2.0"
           memory: 3g
+          pids: 1024
     mem_swappiness: 0
-    pids_limit: 1024
     logging: *logging
 
   # CloudHosting setup panel (PUBLIC image, product-aware). The client logs in with
