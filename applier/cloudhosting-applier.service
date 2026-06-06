@@ -1,0 +1,22 @@
+# Runs the host-side applier when the panel signals a config change (OpenClaw VM).
+# Triggered by cloudhosting-applier.path (oneshot — restarts openclaw-gateway via
+# docker compose, then exits). This service, NOT the web panel, holds docker access;
+# the panel container never sees docker.sock.
+
+[Unit]
+Description=CloudHosting AI Panel applier (restart agent on config change)
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+# Per-VM product + compose path. apply.sh also reads this file directly.
+EnvironmentFile=/etc/cloudhosting-panel.env
+ExecStart=/usr/local/lib/cloudhosting/apply.sh
+# Light hardening — needs docker + the compose/data dirs, nothing else.
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

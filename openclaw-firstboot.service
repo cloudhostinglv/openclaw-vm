@@ -1,0 +1,21 @@
+# First-boot provisioning oneshot for the OpenClaw per-client VM.
+# Installed + enabled by autoinstall-snippet.yaml. Runs firstboot.sh ONCE after docker
+# + networking are up: pulls + starts the stack, seeds config + gateway token, derives
+# PANEL_DOMAIN if blank, installs the host applier, then disables itself.
+#
+# Safe if it lingers enabled: firstboot.sh is idempotent and disables this unit at the
+# end, so a re-enable + reboot just re-converges.
+
+[Unit]
+Description=OpenClaw VM first-boot provisioning (panel + TLS + agent)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+ConditionPathExists=/opt/openclaw-vm/firstboot.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/openclaw-vm/firstboot.sh
+
+[Install]
+WantedBy=multi-user.target

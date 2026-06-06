@@ -1,45 +1,45 @@
-# OpenClaw gateway for a single-tenant per-client VM.
-# The client gets a personal AI agent in their messaging apps that can run
-# tools/commands. Backend LLM gateway: avots.ai (OpenAI-compatible). Each client
-# uses their OWN avots key. License: MIT (OpenClaw Foundation).
-# Upstream: github.com/openclaw/openclaw  docs: docs.openclaw.ai
+# OpenClaw per-client single-tenant VM — turnkey stack.
+# Three internet-relevant pieces + a CLI sidecar:
+#   openclaw-gateway -> the AGENT. Talks OUT to messaging platforms (long-polling)
+#                       and OUT to avots.ai. Gateway HTTP API bound to LOOPBACK only.
+#                       Reads ~/.openclaw/openclaw.json + .env (written by the panel).
+#   panel            -> CloudHosting setup panel (ghcr.io/cloudhostinglv/ai-panel,
+#                       PRODUCT=openclaw). Unprivileged; writes openclaw.json + .env
+#                       into the SHARED ./data and touches ./data/.apply-request so the
+#                       HOST applier restarts openclaw-gateway. Plain HTTP :8080 on the
+#                       internal `web` net only.
+#   caddy            -> TLS terminator for ${PANEL_DOMAIN} on :8443 -> panel:8080. The
+#                       ONLY internet-facing inbound (plus :80 for ACME HTTP-01).
+#   openclaw-cli     -> on-demand CLI sidecar (doctor/onboard/models), shares the
+#                       gateway net namespace. Never auto-starts (profile: cli).
 #
-# Topology (outbound-only):
-#   openclaw-gateway -> talks OUT to messaging platforms (long-polling) and OUT to
-#                       avots.ai. Binds the gateway HTTP API to LOOPBACK only. No
-#                       inbound port reachable off-box; no TLS / reverse proxy.
-#   openclaw-cli     -> sidecar that shares the gateway's network namespace; used to
-#                       run `openclaw ...` subcommands (onboard, doctor, models) against
-#                       the same config/state. Started on demand via `compose run`.
+# NETWORK MODEL: the bare agent is outbound-only, but adding the setup panel means the
+# VM now accepts INBOUND 80 + 443/8443 (panel + ACME). The agent still publishes only
+# loopback; only Caddy is internet-facing.
 #
-# This file is DERIVED from upstream docker-compose.yml (openclaw/openclaw @ main) and
-# trimmed/hardened for a locked-down single-tenant VM:
-#   - Upstream defaults the gateway --bind to "lan" and publishes 18789/18790/3978 on
-#     ALL interfaces. We force --bind=loopback and publish ONLY on 127.0.0.1, and we do
-#     NOT publish the bridge (18790) or MS Teams (3978) ports at all (messaging is
-#     outbound long-polling; no inbound webhook is used).
-#   - We never mount /var/run/docker.sock into the gateway. (Upstream leaves it
-#     commented for the sandbox's docker backend; see README for the safe alternative.)
+# State: the host ./data is bind-mounted as ~/.openclaw (gateway) and /data (panel).
+# The panel runs as uid 1000 (the image's node user) so the openclaw.json/.env it
+# writes are owned by, and readable by, the gateway. firstboot.sh enforces ownership.
 #
-# State: ~/.openclaw on the host (config openclaw.json + .env + workspace + sessions)
-# is bind-mounted in. The image is stateless; upgrade by bumping the pinned digest.
-#
-# Hardening: no-new-privileges, NO docker.sock, dropped caps, resource + pid limits,
-# loopback-only publish. The OpenClaw tool sandbox is enabled in openclaw.json
-# (agents.defaults.sandbox). See README for the docker-backend sandbox trade-off.
+# Hardening: no-new-privileges, NO docker.sock anywhere, dropped caps, resource + pid
+# limits, loopback-only agent publish. OpenClaw's tool sandbox is on in openclaw.json.
 
 x-restart: &restart unless-stopped
 
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   openclaw-gateway:
-    # PIN — re-verify before baking the golden image.
-    # Latest STABLE release as of 2026-06-05 is 2026.6.1 (newer tags are alpha/beta).
-    # CVE-2026-25253 (auth-token theft -> 1-click RCE) was patched in 2026.1.29; this
-    # tag is well past that. Pinned by the multi-arch index digest for immutability:
+    # PIN — re-verify (doctor + live tool call) before baking the golden image.
+    # Latest STABLE on GHCR as of 2026-06-06 is 2026.6.1 (newer is only 2026.6.5-beta.1).
+    # CVE-2026-25253 (auth-token theft -> 1-click RCE) was patched in 2026.1.29.
+    # Pinned by the multi-arch index digest for immutability:
     #   ghcr.io/openclaw/openclaw:2026.6.1
     #   == sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
-    # Re-check GitHub releases + the GHCR package and re-bake when a newer PATCHED
-    # stable ships (this project is pre-stable cadence and ships CVEs/fixes often).
     image: ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
     container_name: openclaw-gateway
     restart: *restart
@@ -47,64 +47,42 @@ services:
     networks:
       - openclaw
     env_file:
-      - path: .env
+      # Agent secrets (AVOTS_API_KEY, bot tokens, OPENCLAW_GATEWAY_TOKEN) live in the
+      # SHARED data dir, written by the panel. OpenClaw also resolves ${VAR} in
+      # openclaw.json from ~/.openclaw/.env (= ./data/.env) itself.
+      - path: ./data/.env
         required: false
     environment:
       HOME: /home/node
       OPENCLAW_HOME: /home/node
       TERM: xterm-256color
       TZ: ${OPENCLAW_TZ:-UTC}
-      # Pin container-side state/config/workspace paths so any host paths imported via
-      # .env cannot leak into the container and break first-reply mkdir (upstream #77436).
+      # Pin container-side state/config/workspace paths so any host paths in .env
+      # cannot leak in and break first-reply mkdir (upstream #77436).
       OPENCLAW_STATE_DIR: /home/node/.openclaw
       OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
       OPENCLAW_CONFIG_DIR: /home/node/.openclaw
       OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
-      # Gateway auth token (loopback-only, but defense-in-depth). Set in .env.
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      # Bonjour/mDNS off in containers (auto, but be explicit for a headless VM).
       OPENCLAW_DISABLE_BONJOUR: ${OPENCLAW_DISABLE_BONJOUR:-1}
     volumes:
-      # Host config/state dir. We pre-seed openclaw.json + .env here at provision time.
-      - ${OPENCLAW_CONFIG_DIR:-/home/node/.openclaw}:/home/node/.openclaw
-      - ${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}:/home/node/.openclaw/workspace
-      # Auth-profile secret dir (used when onboarding stores provider keyRefs).
-      - ${OPENCLAW_AUTH_PROFILE_SECRET_DIR:-/home/node/.openclaw-auth-profile-secrets}:/home/node/.config/openclaw
-      ## Tool sandbox with the Docker BACKEND would require the lines below.
-      ## We deliberately DO NOT enable it: mounting docker.sock gives the agent host
-      ## root-equivalent. The shipped openclaw.json uses sandbox.mode:"all" with the
-      ## default backend (in-gateway isolation) + workspaceAccess:"none" + high-risk
-      ## tools denied. Only consider docker-backend sandboxing on a DEDICATED throwaway
-      ## docker context, never the host socket. See README "Sandbox" section.
+      # The SAME host ./data the panel writes (gateway sees it as ~/.openclaw).
+      - ./data:/home/node/.openclaw
+      - ./data/workspace:/home/node/.openclaw/workspace
+      - ./data/auth-profile-secrets:/home/node/.config/openclaw
+      ## Docker-backend sandbox would need docker.sock here. We DO NOT enable it:
+      ## that hands the agent host-root. The shipped openclaw.json uses the default
+      ## in-gateway sandbox (mode:all + workspaceAccess:none). See README.
       # - /var/run/docker.sock:/var/run/docker.sock
-    # group_add:
-    #   - "${DOCKER_GID:-999}"
-    # Publish ONLY on loopback, and ONLY the gateway API port. Off-box: unreachable.
-    # (Bridge 18790 and MS Teams 3978 are intentionally not published.)
+    # Publish ONLY on loopback, ONLY the gateway API port. Off-box: unreachable.
     ports:
       - "127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
-    command:
-      [
-        "node",
-        "dist/index.js",
-        "gateway",
-        "--bind",
-        "loopback",
-        "--port",
-        "18789",
-      ]
+    command: ["node", "dist/index.js", "gateway", "--bind", "loopback", "--port", "18789"]
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -116,22 +94,78 @@ services:
           memory: 3g
     mem_swappiness: 0
     pids_limit: 1024
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
-  # CLI sidecar. NOT a long-running service — invoke on demand, e.g.:
+  # CloudHosting setup panel (PUBLIC image, product-aware). The client logs in with
+  # PANEL_PASSWORD, picks avots (recommended) + pastes their key, and sets the owner
+  # id for the messaging channel (OpenClaw allowFrom). The panel writes openclaw.json
+  # + .env into the SHARED ./data and touches ./data/.apply-request; the HOST applier
+  # restarts openclaw-gateway. Unprivileged, no docker.sock.
+  panel:
+    image: ghcr.io/cloudhostinglv/ai-panel:latest
+    container_name: openclaw-panel
+    restart: *restart
+    # Run as the gateway's uid (1000, the image node user) so the 0600 openclaw.json
+    # /.env the panel writes are owned by, and readable by, the agent.
+    user: "1000:1000"
+    depends_on:
+      - openclaw-gateway
+    environment:
+      PRODUCT: "openclaw"
+      PANEL_PASSWORD: "${PANEL_PASSWORD}"      # REQUIRED; fails closed if empty (below)
+      PANEL_REQUIRE_AUTH: "1"                  # empty password => refuse to start
+      PANEL_PORT: "8080"
+      PANEL_DOMAIN: "${PANEL_DOMAIN}"          # public host; firstboot derives if blank
+      OPENCLAW_DATA_DIR: "/data"               # panel writes openclaw.json/.env here (= gateway's ~/.openclaw)
+      AVOTS_API_KEY: "${AVOTS_API_KEY:-}"      # turnkey: if set, panel auto-connects avots on startup
+      HOME: "/data"                            # writable home for uid 1000 so OAuth client_id/token persist (/data/.config)
+    volumes:
+      # SAME host data dir the gateway mounts (gateway sees ~/.openclaw, panel /data).
+      - ./data:/data
+    expose:
+      - "8080"
+    networks:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging: *logging
+
+  # TLS terminator + reverse proxy. The ONLY internet-facing service. Real Let's
+  # Encrypt cert via HTTP-01 for ${PANEL_DOMAIN} on :8443 -> panel:8080.
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: openclaw-caddy
+    restart: *restart
+    depends_on:
+      - panel
+    environment:
+      PANEL_DOMAIN: "${PANEL_DOMAIN}"
+    ports:
+      - "80:80"                                # ACME HTTP-01 (cannot run on 8443)
+      - "8443:8443"                            # the panel (TLS)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - web
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging: *logging
+
+  # CLI sidecar. NOT long-running — invoke on demand, e.g.:
   #   docker compose run --rm openclaw doctor
   #   docker compose run --rm openclaw models list
-  # Onboarding uses a bespoke entrypoint override (see autoinstall-snippet.yaml /
-  # README) so the env-backed secret refs resolve. Shares the gateway net namespace
-  # so `openclaw` reaches the loopback gateway at 127.0.0.1:18789.
   openclaw:
     image: ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
     container_name: openclaw-cli
-    profiles: ["cli"]            # never auto-starts with `up`; only on explicit run/up
+    profiles: ["cli"]
     network_mode: "service:openclaw-gateway"
     depends_on:
       - openclaw-gateway
@@ -139,7 +173,7 @@ services:
     stdin_open: true
     tty: true
     env_file:
-      - path: .env
+      - path: ./data/.env
         required: false
     environment:
       HOME: /home/node
@@ -150,27 +184,27 @@ services:
       OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
       OPENCLAW_CONFIG_DIR: /home/node/.openclaw
       OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
       BROWSER: echo
     volumes:
-      - ${OPENCLAW_CONFIG_DIR:-/home/node/.openclaw}:/home/node/.openclaw
-      - ${OPENCLAW_WORKSPACE_DIR:-/home/node/.openclaw/workspace}:/home/node/.openclaw/workspace
-      - ${OPENCLAW_AUTH_PROFILE_SECRET_DIR:-/home/node/.openclaw-auth-profile-secrets}:/home/node/.config/openclaw
+      - ./data:/home/node/.openclaw
+      - ./data/workspace:/home/node/.openclaw/workspace
+      - ./data/auth-profile-secrets:/home/node/.config/openclaw
     entrypoint: ["node", "dist/index.js"]
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *logging
 
-# No docker.sock is mounted anywhere on purpose: OpenClaw is RCE-by-design (it can run
-# arbitrary commands/code), so the host Docker socket must never be reachable from the
-# stack. The VM itself is the isolation boundary.
+# No docker.sock is mounted anywhere on purpose: OpenClaw is RCE-by-design. The VM is
+# the isolation boundary; docker control stays with the host-side applier only.
 
 networks:
   openclaw:
     driver: bridge
+  web:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

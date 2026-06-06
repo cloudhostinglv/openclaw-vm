@@ -1,0 +1,17 @@
+# Watches the shared data volume for the panel's apply signal (OpenClaw VM).
+# The web panel (unprivileged) writes <data>/.apply-request; this path unit fires
+# cloudhosting-applier.service whenever it changes, which runs apply.sh on the HOST
+# (docker control stays off the web surface). firstboot.sh installs these units.
+#
+# PathChanged MUST match the host path of the shared data dir (the dir the panel
+# mounts as /data and the gateway mounts as ~/.openclaw). For this VM: /opt/openclaw-vm/data.
+
+[Unit]
+Description=Watch for CloudHosting AI Panel apply requests (OpenClaw)
+
+[Path]
+PathChanged=/opt/openclaw-vm/data/.apply-request
+Unit=cloudhosting-applier.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,51 @@
+# Caddyfile — TLS front for the CloudHosting AI Panel on an OpenClaw VM.
+#
+# WHY this exists on an otherwise outbound-only appliance:
+#   OpenClaw's gateway is loopback-only and has NO web UI (the client uses it via a
+#   messaging bot). But the unified onboarding PANEL must be reachable so the client
+#   can log in, pick a provider + paste their key, and set the owner id. Caddy
+#   terminates TLS for ${PANEL_DOMAIN} on :8443 (the panel is ALWAYS on 8443 across
+#   all products) and reverse-proxies to the panel container. This adds INBOUND
+#   80 (ACME HTTP-01, cannot run on 8443) + 8443 to the VM.
+#
+#   The OpenClaw GATEWAY stays loopback-only (127.0.0.1:18789) and is NOT fronted
+#   here. Caddy only ever sees the panel. Do not add a route to 18789.
+#
+# PANEL_DOMAIN is injected from the environment (compose passes it through). On first
+# boot firstboot.sh derives it from the primary IPv4 if it was left blank.
+
+{
+	email admin@cloudhosting.lv
+	# Uncomment to use the LE staging endpoint while testing (avoids rate limits):
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+{$PANEL_DOMAIN}:8443 {
+	encode zstd gzip
+
+	# Terminate TLS here and reverse-proxy plain HTTP to the panel container
+	# (service name `panel` on the internal `web` network).
+	reverse_proxy panel:8080 {
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 30s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	request_body {
+		max_size 256KB
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
