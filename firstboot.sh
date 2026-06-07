@@ -89,22 +89,30 @@ docker compose -f "${COMPOSE_FILE}" pull
 log "docker compose up -d"
 docker compose -f "${COMPOSE_FILE}" up -d
 
-# --- 6. Install the host-side applier ------------------------------------------------
-log "Installing applier units"
+# --- 6. Install the host-side applier + software updater -----------------------------
+log "Installing applier + updater units"
 install -d -m 0755 "${APPLIER_LIB}"
-install -m 0755 "${APPLIER_SRC}/apply.sh" "${APPLIER_LIB}/apply.sh"
+install -m 0755 "${APPLIER_SRC}/apply.sh"  "${APPLIER_LIB}/apply.sh"
+install -m 0755 "${APPLIER_SRC}/update.sh" "${APPLIER_LIB}/update.sh"
 cp "${APPLIER_SRC}/cloudhosting-applier.path"    /etc/systemd/system/
 cp "${APPLIER_SRC}/cloudhosting-applier.service" /etc/systemd/system/
+cp "${APPLIER_SRC}/cloudhosting-updater.path"    /etc/systemd/system/
+cp "${APPLIER_SRC}/cloudhosting-updater.service" /etc/systemd/system/
 cat > "${PANEL_ENV}" <<EOF
 PRODUCT=openclaw
 COMPOSE_FILE=${COMPOSE_FILE}
 COMPOSE_PROJECT_DIR=${APP_DIR}
+REPO_DIR=${APP_DIR}
 DATA_DIR=${DATA_DIR}
+UPDATE_BRANCH=main
 EOF
 chmod 0644 "${PANEL_ENV}"
 systemctl daemon-reload
 systemctl enable --now cloudhosting-applier.path
-log "Applier enabled (watching ${DATA_DIR}/.apply-request)"
+systemctl enable --now cloudhosting-updater.path
+log "Applier watching ${DATA_DIR}/.apply-request; updater watching ${DATA_DIR}/.update-request"
+# Record the deployed version so the panel shows current -> latest right away.
+"${APPLIER_LIB}/update.sh" --stamp-only || log "WARN: initial version stamp failed"
 
 # --- 7. Disable this oneshot --------------------------------------------------------
 log "Disabling openclaw-firstboot.service (provisioning complete)"

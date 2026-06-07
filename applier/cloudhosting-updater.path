@@ -1,0 +1,16 @@
+# Watches the shared data volume for the panel's UPDATE signal (OpenClaw VM).
+# The web panel (unprivileged) writes <data>/.update-request; this path unit fires
+# cloudhosting-updater.service, which runs update.sh on the HOST (git pull + docker
+# compose pull/up). firstboot.sh installs + enables these units.
+#
+# PathChanged MUST be the host path of the shared data dir. OpenClaw: /opt/openclaw-vm/data.
+
+[Unit]
+Description=Watch for CloudHosting AI Panel update requests (OpenClaw)
+
+[Path]
+PathChanged=/opt/openclaw-vm/data/.update-request
+Unit=cloudhosting-updater.service
+
+[Install]
+WantedBy=multi-user.target
