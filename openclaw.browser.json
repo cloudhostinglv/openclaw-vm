@@ -40,11 +40,11 @@
   },
 
   "tools": {
-    "$comment": "Tool policy is defense-in-depth on TOP of the sandbox. profile 'coding' gives fs/runtime/web/etc; we DENY the highest-blast-radius tools globally, and lock untrusted/unknown senders down to read-only via toolsBySender['*'].",
+    "$comment": "Tool policy is defense-in-depth on TOP of the sandbox. profile 'coding' gives fs/runtime/web/etc; canvas stays globally denied; BROWSER is owner-only: removed from deny and added to toolsBySender['*'] so only the allowFrom owner can drive it, exactly like exec. Untrusted/unknown senders stay read-only.",
     "profile": "coding",
-    "deny": ["browser", "canvas"],
+    "deny": ["canvas"],
     "toolsBySender": {
-      "*": ["exec", "process", "code_execution", "write", "edit", "apply_patch"]
+      "*": ["exec", "process", "code_execution", "write", "edit", "apply_patch", "browser"]
     },
     "elevated": {
       "$comment": "Elevated exec BYPASSES the sandbox. Keep it OFF. If a trusted owner truly needs it, enable per channel+identity here, never globally.",

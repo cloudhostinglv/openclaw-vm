@@ -40,10 +40,18 @@ services:
     # Pinned by the multi-arch index digest for immutability:
     #   ghcr.io/openclaw/openclaw:2026.6.1
     #   == sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
-    image: ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
+    # Default = base image (no browser). On a VM with enough RAM, firstboot sets
+    # OPENCLAW_GATEWAY_IMAGE to the '-browser' variant (Chromium+Playwright baked in)
+    # and copies openclaw.browser.json, turning on the owner-only browser tool.
+    #   base:    2026.6.1        == sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
+    #   browser: 2026.6.1-browser == sha256:c1cdafbb9630b7fc00b81455ede96bad8eb22abc8da1feff2e8389ced6652a16
+    image: ${OPENCLAW_GATEWAY_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5}
     container_name: openclaw-gateway
     restart: *restart
     init: true
+    # Chromium needs more than Docker's 64 MB default /dev/shm. Harmless on the base
+    # image (tmpfs is allocated on demand, not preallocated).
+    shm_size: "1gb"
     networks:
       - openclaw
     env_file:
@@ -91,7 +99,9 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 3g
+          # base agent fits in 3g; firstboot raises this (OPENCLAW_GATEWAY_MEM) on
+          # browser-enabled VMs to leave headroom for Chromium.
+          memory: ${OPENCLAW_GATEWAY_MEM:-3g}
           pids: 1024
     mem_swappiness: 0
     logging: *logging
@@ -163,7 +173,7 @@ services:
   #   docker compose run --rm openclaw doctor
   #   docker compose run --rm openclaw models list
   openclaw:
-    image: ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5
+    image: ${OPENCLAW_GATEWAY_IMAGE:-ghcr.io/openclaw/openclaw:2026.6.1@sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5}
     container_name: openclaw-cli
     profiles: ["cli"]
     network_mode: "service:openclaw-gateway"

@@ -38,6 +38,31 @@ cd "${APP_DIR}" || die "missing ${APP_DIR}"
 OPENCLAW_UID="${OPENCLAW_UID:-1000}"   # the image's node user
 OPENCLAW_GID="${OPENCLAW_GID:-1000}"
 
+# --- 0. RAM gate: enable the browser tool only on VMs with headroom for Chromium ----
+# Big VM (>= BROWSER_MIN_MB total RAM) -> the '-browser' gateway image + openclaw.browser.json
+# (owner-only browser). Small VM -> untouched: base image, browser stays denied. The choice is
+# persisted in .env so it is stable across reboots and `docker compose` invocations by the applier.
+BROWSER_MIN_MB="${BROWSER_MIN_MB:-6000}"
+MEM_MB="$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)"
+BROWSER_IMAGE="ghcr.io/openclaw/openclaw:2026.6.1-browser@sha256:c1cdafbb9630b7fc00b81455ede96bad8eb22abc8da1feff2e8389ced6652a16"
+CONFIG_SRC="openclaw.json"
+if [ "${MEM_MB}" -ge "${BROWSER_MIN_MB}" ] && [ -f "${APP_DIR}/openclaw.browser.json" ]; then
+  log "RAM ${MEM_MB} MB >= ${BROWSER_MIN_MB} MB: enabling owner-only browser tool"
+  CONFIG_SRC="openclaw.browser.json"
+  # Persist the image + memory override for compose (idempotent).
+  for kv in "OPENCLAW_GATEWAY_IMAGE=${BROWSER_IMAGE}" "OPENCLAW_GATEWAY_MEM=5g"; do
+    k="${kv%%=*}"
+    if grep -q "^${k}=" "${ENV_FILE}" 2>/dev/null; then
+      sed -i "s|^${k}=.*|${kv}|" "${ENV_FILE}"
+    else
+      printf '%s\n' "${kv}" >> "${ENV_FILE}"
+    fi
+  done
+  set -a && . "${ENV_FILE}" && set +a || true
+else
+  log "RAM ${MEM_MB} MB < ${BROWSER_MIN_MB} MB (or no browser config): base image, browser disabled"
+fi
+
 # --- 1. Shared data dir + subdirs: owner = agent uid:gid (panel runs as it too) -----
 log "Ensuring ${DATA_DIR} (owner ${OPENCLAW_UID}:${OPENCLAW_GID})"
 mkdir -p "${DATA_DIR}/workspace" "${DATA_DIR}/auth-profile-secrets"
@@ -45,9 +70,9 @@ chown -R "${OPENCLAW_UID}:${OPENCLAW_GID}" "${DATA_DIR}"
 chmod 0750 "${DATA_DIR}"
 
 # --- 2. Seed openclaw.json the gateway reads (don't clobber an existing one) ---------
-if [ -f "${APP_DIR}/openclaw.json" ] && [ ! -f "${DATA_DIR}/openclaw.json" ]; then
-  log "Seeding openclaw.json into data dir"
-  cp "${APP_DIR}/openclaw.json" "${DATA_DIR}/openclaw.json"
+if [ -f "${APP_DIR}/${CONFIG_SRC}" ] && [ ! -f "${DATA_DIR}/openclaw.json" ]; then
+  log "Seeding ${CONFIG_SRC} into data dir as openclaw.json"
+  cp "${APP_DIR}/${CONFIG_SRC}" "${DATA_DIR}/openclaw.json"
   chown "${OPENCLAW_UID}:${OPENCLAW_GID}" "${DATA_DIR}/openclaw.json"
   chmod 0600 "${DATA_DIR}/openclaw.json"
 fi
