@@ -40,8 +40,9 @@
   },
 
   "tools": {
-    "$comment": "Tool policy is defense-in-depth on TOP of the sandbox. profile 'coding' gives fs/runtime/web/etc; canvas stays globally denied; BROWSER is owner-only: removed from deny and added to toolsBySender['*'] so only the allowFrom owner can drive it, exactly like exec. Untrusted/unknown senders stay read-only.",
+    "$comment": "BROWSER BUILD. The core catalog ships the browser tool with profiles:[], so no profile grants it and tools.allow cannot bring it back (allow INTERSECTS what the profile left, so it would resolve to an empty toolset). tools.alsoAllow is the documented knob: it merges into the profile allowlist BEFORE filtering, keeping every coding tool and adding browser. Browser is OWNER-ONLY: it sits in toolsBySender['*'] next to exec, so an unknown sender that asks the agent to browse is refused. Verified end to end on a live VM 2026-08-08.",
     "profile": "coding",
+    "alsoAllow": ["browser"],
     "deny": ["canvas"],
     "toolsBySender": {
       "*": ["exec", "process", "code_execution", "write", "edit", "apply_patch", "browser"]
@@ -76,6 +77,12 @@
         "workspaceAccess": "none"
       }
     }
+  },
+
+  "browser": {
+    "enabled": true,
+    "headless": true,
+    "noSandbox": true
   },
 
   "channels": {
