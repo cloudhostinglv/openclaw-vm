@@ -71,8 +71,8 @@
         }
       },
       "sandbox": {
-        "$comment": "SECURITY-CRITICAL. mode:all sandboxes EVERY session (incl. the main one). Default backend = in-gateway isolation (no docker.sock needed). workspaceAccess:none = the sandbox cannot read/write the host workspace. To use the Docker backend instead, see README - it requires the docker CLI in the image and a NON-host docker context; do NOT mount the host socket.",
-        "mode": "all",
+        "$comment": "mode:off (owner decision 2026-08-08). OpenClaw 2026.6.1 sandboxing REQUIRES the docker CLI inside the gateway container, which this hardened VM deliberately does not have (no docker.sock = no host root). With mode:all EVERY tool call died with 'Sandbox mode requires Docker' - verified on a live VM. The single-tenant VM is the isolation boundary and the agent only answers its allowFrom owner. workspaceAccess:none still keeps tools out of the host workspace.",
+        "mode": "off",
         "workspaceAccess": "none"
       }
     }

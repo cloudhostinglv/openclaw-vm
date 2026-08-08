@@ -187,8 +187,13 @@ attachments are passed natively.
       (`sha256:b12f76a7947e4cdd328bf3ea1045d41a5494b33852c911e9bc4fdd03dde469d5`).
       CVE-2026-25253 was fixed in `2026.1.29`; never run below that. **Never use
       `:latest` or `:main`.**
-- [ ] **Sandbox ON.** `agents.defaults.sandbox.mode: "all"` (every session sandboxed) +
-      `workspaceAccess: "none"`. Default (in-gateway) backend — **no docker.sock**.
+- [ ] **Sandbox OFF, deliberately.** `agents.defaults.sandbox.mode: "off"` +
+      `workspaceAccess: "none"`. Verified on a live VM (2026-08-08): OpenClaw 2026.6.1
+      sandboxing **requires the docker CLI inside the gateway container**, which this VM
+      does not have (and must not: no docker.sock = no host root). With `mode: "all"`
+      EVERY tool call fails `Sandbox mode requires Docker`, so the agent could only chat.
+      The isolation boundary here is the single-tenant VM itself plus `allowFrom` +
+      `toolsBySender` (owner-only tools); `workspaceAccess: "none"` still applies.
 - [ ] **Gateway loopback-only.** `--bind loopback`, published on `127.0.0.1` only.
 - [ ] **Gateway token set.** `gateway.auth.mode: "token"` with a unique
       `OPENCLAW_GATEWAY_TOKEN` (defense-in-depth even on loopback).
@@ -209,14 +214,24 @@ attachments are passed natively.
 
 ### Sandbox backend note (read before changing it)
 
-The shipped config uses the **default sandbox backend** (isolation inside the gateway),
-which needs nothing extra. OpenClaw also supports a **Docker backend** for stronger
-isolation — but that requires the Docker CLI in the image *and* a reachable Docker
-daemon. **Do not** satisfy that by mounting the host `/var/run/docker.sock`: that hands
-the agent host-root-equivalent and defeats the whole point. If you want the docker
-backend, give the gateway a **dedicated, throwaway Docker context** (rootless or a nested
-daemon), never the host socket. The relevant compose lines are left **commented** on
-purpose.
+The shipped config runs with `sandbox.mode: "off"`, and that is a measured decision, not
+an oversight. On 2026.6.1 there is no docker-free sandbox backend left: any sandboxed
+session shells out to the `docker` CLI, so on this image every tool call dies with
+`Sandbox mode requires Docker, but the "docker" command was not found in PATH`. Verified
+end to end on a live VM (2026-08-08): with `mode: "all"` even `echo` failed; with
+`mode: "off"` the same call ran.
+
+The two ways to get sandboxing back both cost more than they give here:
+mounting the host `/var/run/docker.sock` hands the agent host-root-equivalent (never do
+this — the compose lines stay commented on purpose), and a dedicated rootless/nested
+daemon adds a second container stack to every client VM. Since each VM is single-tenant
+and the agent only answers its `allowFrom` owner, the VM boundary plus
+`toolsBySender` (owner-only `exec`) is the isolation that actually matters.
+Re-evaluate if upstream restores an in-process backend.
+
+Existing VMs are not migrated: `firstboot` never overwrites an existing
+`data/openclaw.json`, so this fix reaches newly provisioned VMs only (owner decision
+2026-08-08).
 
 ---
 
