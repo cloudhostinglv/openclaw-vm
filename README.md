@@ -200,8 +200,10 @@ attachments are passed natively.
 - [ ] **Answer only the owner.** Set the channel's `allowFrom` to the owner's id, AND
       keep `tools.toolsBySender["*"]` denying `exec/process/code_execution/write/edit/
       apply_patch` so any non-owner / untrusted sender is read-only.
-- [ ] **High-risk tools denied for untrusted input.** `browser`/`canvas` denied globally;
-      `tools.elevated.enabled: false` (elevated exec BYPASSES the sandbox — keep off).
+- [ ] **High-risk tools denied for untrusted input.** `canvas` denied globally;
+      `browser` is owner-only on browser-enabled VMs (removed from `tools.deny`, added to
+      `tools.toolsBySender["*"]`, exactly like `exec`), so pages the agent visits cannot
+      reach a non-owner session; `tools.elevated.enabled: false`.
 - [ ] **No docker.sock, never privileged.** Compose mounts no socket, drops ALL caps,
       `no-new-privileges`, pids + memory + cpu limits.
 - [ ] **Egress restricted** to avots.ai + the messaging platform where the host allows.
@@ -226,7 +228,7 @@ mounting the host `/var/run/docker.sock` hands the agent host-root-equivalent (n
 this — the compose lines stay commented on purpose), and a dedicated rootless/nested
 daemon adds a second container stack to every client VM. Since each VM is single-tenant
 and the agent only answers its `allowFrom` owner, the VM boundary plus
-`toolsBySender` (owner-only `exec`) is the isolation that actually matters.
+`toolsBySender` (owner-only `exec`/`browser`) is the isolation that actually matters.
 Re-evaluate if upstream restores an in-process backend.
 
 Existing VMs are not migrated: `firstboot` never overwrites an existing
